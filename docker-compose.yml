@@ -14,11 +14,39 @@ services:
       interval: 5s
       retries: 5
 
+  minio:
+    image: minio/minio:latest
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      retries: 5
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 minioadmin minioadmin &&
+        mc mb --ignore-existing local/meteo-raw &&
+        exit 0
+      "
+
   airflow:
     image: apache/airflow:2.9.1
     depends_on:
       postgres:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     environment:
       - AIRFLOW__CORE__EXECUTOR=SequentialExecutor
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=sqlite:////opt/airflow/airflow.db
@@ -31,13 +59,15 @@ services:
       - "8080:8080"
     command: >
       bash -c "
-        pip install psycopg2-binary requests &&
+        pip install psycopg2-binary requests boto3 &&
         airflow db migrate &&
         airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@local.dev &&
         airflow connections add postgres_meteo --conn-type postgres --conn-host postgres --conn-port 5432 --conn-login airflow --conn-password airflow --conn-schema meteo &&
+        airflow connections add minio_s3 --conn-type aws --conn-login minioadmin --conn-password minioadmin --conn-extra '{\"endpoint_url\": \"http://minio:9000\"}' &&
         airflow variables set cities '[{\"name\":\"Paris\",\"lat\":48.8566,\"lon\":2.3522},{\"name\":\"Lyon\",\"lat\":45.764,\"lon\":4.8357},{\"name\":\"Marseille\",\"lat\":43.2965,\"lon\":5.3698},{\"name\":\"Toulouse\",\"lat\":43.6047,\"lon\":1.4442}]' &&
         airflow variables set open_meteo_base_url 'https://api.open-meteo.com/v1/forecast' &&
         airflow variables set open_meteo_fields 'temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code' &&
+        airflow variables set minio_bucket 'meteo-raw' &&
         airflow webserver -p 8080 -D &&
         airflow scheduler
       "

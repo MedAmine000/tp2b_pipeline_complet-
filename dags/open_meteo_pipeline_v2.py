@@ -1,7 +1,8 @@
-"""TP 2B - Pipeline complet Open-Meteo -> PostgreSQL avec tracabilite.
+"""TP 2B - Pipeline complet Open-Meteo -> MinIO (brut) -> PostgreSQL + tracabilite.
 
-4 taches :
+5 taches :
 - fetch_weather     : appel API Open-Meteo (villes configurables via Variable)
+- save_raw_to_minio : archive la reponse brute dans MinIO (stockage objet S3)
 - transform_weather : selection et structuration des champs utiles
 - load_weather      : insertion dans la table meteo
 - log_ingestion     : ecriture dans la table de suivi ingestion_log
@@ -10,7 +11,9 @@ Parametrage :
 - Variable "cities"              : liste des villes (JSON)
 - Variable "open_meteo_base_url" : URL de base de l'API
 - Variable "open_meteo_fields"   : champs current a demander
+- Variable "minio_bucket"        : nom du bucket pour les donnees brutes
 - Connection "postgres_meteo"    : acces PostgreSQL
+- Connection "minio_s3"          : acces MinIO (compatible S3)
 """
 
 from airflow import DAG
@@ -20,6 +23,7 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 from datetime import datetime, timedelta
 import requests
 import json
+import boto3
 
 POSTGRES_CONN_ID = "postgres_meteo"
 
@@ -53,6 +57,29 @@ def fetch_weather(**kwargs):
 
     kwargs["ti"].xcom_push(key="fetch_count", value=len(results))
     return results
+
+
+def save_raw_to_minio(**kwargs):
+    """Archive le JSON brut dans MinIO pour audit et rejeu."""
+    ti = kwargs["ti"]
+    raw_list = ti.xcom_pull(task_ids="fetch_weather")
+    ds = kwargs["ds"]
+
+    bucket = Variable.get("minio_bucket")
+
+    from airflow.hooks.base import BaseHook
+    conn = BaseHook.get_connection("minio_s3")
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=json.loads(conn.extra)["endpoint_url"],
+        aws_access_key_id=conn.login,
+        aws_secret_access_key=conn.password,
+    )
+
+    key = f"meteo/{ds}/raw_responses.json"
+    body = json.dumps(raw_list, ensure_ascii=False, indent=2)
+    s3.put_object(Bucket=bucket, Key=key, Body=body.encode("utf-8"), ContentType="application/json")
+    print(f"[minio] Archive dans s3://{bucket}/{key} ({len(body)} octets)")
 
 
 def transform_weather(**kwargs):
@@ -157,8 +184,9 @@ with DAG(
 ) as dag:
 
     t_fetch = PythonOperator(task_id="fetch_weather", python_callable=fetch_weather)
+    t_minio = PythonOperator(task_id="save_raw_to_minio", python_callable=save_raw_to_minio)
     t_transform = PythonOperator(task_id="transform_weather", python_callable=transform_weather)
     t_load = PythonOperator(task_id="load_weather", python_callable=load_weather)
     t_log = PythonOperator(task_id="log_ingestion", python_callable=log_ingestion)
 
-    t_fetch >> t_transform >> t_load >> t_log
+    t_fetch >> t_minio >> t_transform >> t_load >> t_log
