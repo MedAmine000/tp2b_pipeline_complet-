@@ -1,0 +1,44 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: meteo
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d meteo"]
+      interval: 5s
+      retries: 5
+
+  airflow:
+    image: apache/airflow:2.9.1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=SequentialExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=sqlite:////opt/airflow/airflow.db
+      - AIRFLOW__CORE__FERNET_KEY=FB0o_zt4e3Ziq3LdUUO7F2Z95cvFFx16hU8jTeR1ASM=
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__WEBSERVER__EXPOSE_CONFIG=True
+    volumes:
+      - ./dags:/opt/airflow/dags
+    ports:
+      - "8080:8080"
+    command: >
+      bash -c "
+        pip install psycopg2-binary requests &&
+        airflow db migrate &&
+        airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@local.dev &&
+        airflow connections add postgres_meteo --conn-type postgres --conn-host postgres --conn-port 5432 --conn-login airflow --conn-password airflow --conn-schema meteo &&
+        airflow variables set cities '[{\"name\":\"Paris\",\"lat\":48.8566,\"lon\":2.3522},{\"name\":\"Lyon\",\"lat\":45.764,\"lon\":4.8357},{\"name\":\"Marseille\",\"lat\":43.2965,\"lon\":5.3698},{\"name\":\"Toulouse\",\"lat\":43.6047,\"lon\":1.4442}]' &&
+        airflow variables set open_meteo_base_url 'https://api.open-meteo.com/v1/forecast' &&
+        airflow variables set open_meteo_fields 'temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code' &&
+        airflow webserver -p 8080 -D &&
+        airflow scheduler
+      "
+    restart: unless-stopped
