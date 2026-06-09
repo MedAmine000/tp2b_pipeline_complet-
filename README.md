@@ -95,16 +95,7 @@ docker exec -it tp2b_pipeline_complet-postgres-1 psql -U airflow -d meteo -c "SE
 docker exec -it tp2b_pipeline_complet-postgres-1 psql -U airflow -d meteo -c "SELECT dag_id, run_id, rows_received, rows_inserted, status, finished_at FROM ingestion_log;"
 ```
 
----
 
-## Differences avec le TP 2A
-
-| Aspect            | TP 2A                        | TP 2B                                  |
-|-------------------|------------------------------|----------------------------------------|
-| Tracabilite       | Aucune                       | Table ingestion_log a chaque run       |
-| Parametrage       | Villes en dur dans le code   | Variables Airflow (modifiable sans code)|
-| Nombre de taches  | 3                            | 4                                      |
-| Maintenabilite    | Il faut editer le .py        | On modifie les Variables dans l'UI     |
 
 ---
 
